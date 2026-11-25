@@ -40,9 +40,17 @@ export const TeacherLogin: React.FC<TeacherLoginProps> = ({
       ? isArabic
         ? 'المتصفح منع نافذة تسجيل الدخول. اسمح بالنوافذ المنبثقة وحاول مرة أخرى.'
         : 'The browser blocked the sign-in popup. Allow popups and try again.'
+      : error === 'auth/unauthorized-domain'
+      ? isArabic
+        ? 'النطاق الحالي غير مصرح له بتسجيل الدخول عبر Google في إعدادات Firebase.'
+        : 'The current domain is not authorized for Google sign-in in Firebase settings.'
+      : error === 'auth/network-request-failed'
+      ? isArabic
+        ? 'تعذّر الاتصال بخدمة المصادقة. تحقّق من الاتصال وحاول مرة أخرى.'
+        : 'Network error while signing in. Check your connection and try again.'
       : isArabic
-      ? 'تعذّر تسجيل الدخول. حاول مرة أخرى.'
-      : 'Sign-in failed. Please try again.'
+      ? `تعذّر تسجيل الدخول (${error}). حاول مرة أخرى.`
+      : `Sign-in failed (${error}). Please try again.`
     : '';
 
   return (

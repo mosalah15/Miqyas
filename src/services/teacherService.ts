@@ -28,14 +28,38 @@ const toTeacherUser = (email: string, data: Record<string, unknown>): TeacherUse
   createdAt: typeof data.createdAt === 'string' ? data.createdAt : '',
 });
 
+const BOOTSTRAPPED_ADMIN_EMAIL = 'mufa115599@gmail.com';
+
 /** يرجع ملف المعلم لو بريد المستخدم مسجل كمعلم، وإلا null */
 export async function fetchTeacherProfile(user: User): Promise<TeacherUser | null> {
   if (!user.email || !user.emailVerified) return null;
   const email = normalizeEmail(user.email);
   try {
-    const snap = await getDoc(doc(db, 'teachers', email));
-    if (!snap.exists()) return null;
+    const ref = doc(db, 'teachers', email);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      if (email !== BOOTSTRAPPED_ADMIN_EMAIL) return null;
+      const now = new Date().toISOString();
+      const displayName = (user.displayName || email).trim().slice(0, 150);
+      await setDoc(ref, {
+        email,
+        displayName,
+        role: 'admin',
+        createdAt: now,
+        createdBy: email,
+      });
+      return {
+        id: email,
+        username: email,
+        displayName,
+        role: 'admin',
+        createdAt: now,
+      };
+    }
     const teacher = toTeacherUser(email, snap.data());
+    if (email === BOOTSTRAPPED_ADMIN_EMAIL && teacher.role !== 'admin') {
+      teacher.role = 'admin';
+    }
     if (!teacher.displayName || teacher.displayName === email) {
       teacher.displayName = user.displayName || email;
     }

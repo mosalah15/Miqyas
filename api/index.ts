@@ -183,6 +183,46 @@ async function resolveGroqModels(groqKey: string): Promise<string[]> {
   return ["openai/gpt-oss-120b", "llama-3.1-8b-instant"];
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTransientAiError(err: any): boolean {
+  const status = Number(err?.status ?? err?.code ?? 0);
+  if ([429, 500, 502, 503, 504].includes(status)) return true;
+  const msg = String(err?.message || err || "");
+  return /503|502|504|429|UNAVAILABLE|high demand|overloaded|RESOURCE_EXHAUSTED|quota|rate limit|ECONNRESET|ETIMEDOUT|fetch failed|network/i.test(
+    msg
+  );
+}
+
+function formatAiFailure(error: any, baseError: string): { status: number; error: string; details: string } {
+  const msg = error?.message || String(error || "");
+  const isUnavailable =
+    Number(error?.status ?? error?.code) === 503 ||
+    /503|UNAVAILABLE|high demand|overloaded/i.test(msg);
+  if (isUnavailable) {
+    return {
+      status: 500,
+      error: "خدمة الذكاء الاصطناعي مزدحمة مؤقتاً.",
+      details: "تشهد نماذج الذكاء الاصطناعي ضغطاً مؤقتاً حالياً رغم المحاولة التلقائية. يرجى المحاولة مجدداً بعد قليل.",
+    };
+  }
+  const isQuotaError =
+    Number(error?.status ?? error?.code) === 429 ||
+    /RESOURCE_EXHAUSTED|quota|rate limit|429/i.test(msg);
+  if (isQuotaError) {
+    return {
+      status: 429,
+      error: baseError,
+      details: "تم تجاوز الحد المؤقت لطلبات واجهة Gemini المجانية. يرجى الانتظار دقيقة واحدة ثم المحاولة مجدداً.",
+    };
+  }
+  return {
+    status: 500,
+    error: baseError,
+    details: msg,
+  };
+}
+
 async function callGroqChat(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   temperature = 0.2
@@ -195,7 +235,7 @@ async function callGroqChat(
 
   for (const model of models) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
       const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -219,9 +259,112 @@ async function callGroqChat(
         console.warn(`[Groq Warning] Model ${model} status ${response.status}: ${errText.slice(0, 150)}`);
         if (response.status === 404 || response.status === 400) {
           cachedGroqModels = null;
-          continue;
         }
-        return null;
+        continue;
+      }
+
+      const json = await response.json();
+      const content = json.choices?.[0]?.message?.content;
+      if (content) return content;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.warn(`[Groq Warning] Model ${model} failed, trying next Groq model:`, err);
+      continue;
+    }
+  }
+  return null;
+}
+
+let cachedGroqVisionModels: { models: string[]; fetchedAt: number } | null = null;
+
+async function resolveGroqVisionModels(groqKey: string): Promise<string[]> {
+  const now = Date.now();
+  if (cachedGroqVisionModels && now - cachedGroqVisionModels.fetchedAt < 60 * 60 * 1000) {
+    return cachedGroqVisionModels.models;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${groqKey}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      const visionIds: string[] = Array.isArray(data?.data)
+        ? data.data
+            .map((m: any) => String(m?.id || ""))
+            .filter(
+              (id: string) =>
+                id &&
+                !/whisper|guard|tts|playai|allam|orpheus|safeguard|embed/i.test(id) &&
+                /(vision|llama-4|llava|pixtral|qwen.*vl)/i.test(id)
+            )
+        : [];
+      cachedGroqVisionModels = { models: visionIds, fetchedAt: now };
+      return visionIds;
+    }
+  } catch {
+    clearTimeout(timeoutId);
+  }
+
+  cachedGroqVisionModels = { models: [], fetchedAt: now };
+  return [];
+}
+
+async function callGroqVision(
+  systemInstruction: string,
+  promptText: string,
+  images: Array<{ data: string; mimeType?: string }>,
+  temperature = 0.2
+): Promise<string | null> {
+  const rawGroq = process.env.GROQ_API_KEY;
+  const groqKey = rawGroq ? rawGroq.replace(/['"]+/g, "").trim() : "";
+  if (!groqKey || images.length === 0 || images.length > 5) return null;
+
+  const visionModels = await resolveGroqVisionModels(groqKey);
+  if (visionModels.length === 0) return null;
+
+  const userContent: any[] = [{ type: "text", text: promptText }];
+  for (const img of images) {
+    if (!img?.data) continue;
+    const url = img.data.startsWith("data:")
+      ? img.data
+      : `data:${img.mimeType || "image/jpeg"};base64,${img.data}`;
+    userContent.push({ type: "image_url", image_url: { url } });
+  }
+
+  for (const model of visionModels) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemInstruction },
+            { role: "user", content: userContent },
+          ],
+          temperature,
+          response_format: { type: "json_object" },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        if (response.status === 404 || response.status === 400) {
+          cachedGroqVisionModels = null;
+        }
+        continue;
       }
 
       const json = await response.json();
@@ -229,13 +372,20 @@ async function callGroqChat(
       if (content) return content;
     } catch {
       clearTimeout(timeoutId);
-      return null;
+      continue;
     }
   }
   return null;
 }
 
-// Multi-Model Gemini Free Cascade for public API keys
+const geminiModelCooldownUntil = new Map<string, number>();
+
+function isDailyQuotaExhausted(err: any): boolean {
+  const msg = String(err?.message || err || "");
+  return /PerDay|GenerateRequestsPerDay|free_tier_requests/i.test(msg);
+}
+
+// Multi-Model Gemini Free Cascade (with Per-Model Quota Cooldown & Backoff)
 async function generateWithGeminiCascade(contents: any, config: any) {
   const rawKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
   const apiKey = rawKey.replace(/['"]+/g, "").trim();
@@ -259,21 +409,47 @@ async function generateWithGeminiCascade(contents: any, config: any) {
     "gemini-4-hydrogen",
     "gemini-3.1-flash-lite",
   ];
+  const MAX_ROUNDS = 3;
   let lastError: any = null;
 
-  for (const model of models) {
-    try {
-      const res = await ai.models.generateContent({
-        model,
-        contents,
-        config,
-      });
-      return { response: res, modelUsed: model };
-    } catch (err: any) {
-      console.warn(`[Gemini Cascade] Model ${model} error:`, err?.message || err);
-      lastError = err;
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const now = Date.now();
+    const activeModels = models.filter((m) => (geminiModelCooldownUntil.get(m) || 0) <= now);
+    const candidateModels = activeModels.length > 0 ? activeModels : [models[models.length - 1]];
+    let sawRetryableError = false;
+
+    for (const model of candidateModels) {
+      try {
+        const modelConfig =
+          model === "gemini-3.1-flash-lite" && config?.thinkingConfig
+            ? { ...config, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } }
+            : config;
+        const res = await ai.models.generateContent({
+          model,
+          contents,
+          config: modelConfig,
+        });
+        return { response: res, modelUsed: model };
+      } catch (err: any) {
+        lastError = err;
+        if (isDailyQuotaExhausted(err)) {
+          geminiModelCooldownUntil.set(model, Date.now() + 30 * 60 * 1000);
+          continue;
+        }
+        if (isTransientAiError(err)) {
+          sawRetryableError = true;
+        }
+      }
     }
+
+    if (!sawRetryableError || round === MAX_ROUNDS - 1) {
+      break;
+    }
+
+    const backoffMs = Math.min(3000, 1200 * Math.pow(2, round)) + Math.floor(Math.random() * 400);
+    await sleep(backoffMs);
   }
+
   throw lastError || new Error("تعذر استجابة نماذج Gemini للذكاء الاصطناعي حالياً.");
 }
 
@@ -707,8 +883,41 @@ ${previousQuestionsSummary ? `\n${previousQuestionsSummary}\n` : ""}
           },
         };
 
-        const { response: geminiResponse } = await generateWithGeminiCascade({ parts }, modelConfig);
-        let text = (geminiResponse.text || "{}").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
+        let text = "";
+        try {
+          const { response: geminiResponse } = await generateWithGeminiCascade({ parts }, modelConfig);
+          text = (geminiResponse.text || "{}").trim();
+        } catch (geminiErr) {
+          if (process.env.GROQ_API_KEY) {
+            const jsonSchemaHint = `\n\nReturn ONLY valid JSON matching:\n{\n  "quizTitle": "string",\n  "description": "string",\n  "questions": [\n    {\n      "question": "string",\n      "type": "mcq" or "written",\n      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],\n      "correctAnswer": "string",\n      "requiresImage": false,\n      "isAiSuggestedAnswer": false\n    }\n  ]\n}`;
+            let backupText: string | null = null;
+            if (batchImages.length > 0 && batchImages.length <= 5) {
+              backupText = await callGroqVision(
+                systemInstruction,
+                promptText + jsonSchemaHint,
+                batchImages,
+                quizMode === "format_existing" ? 0.0 : 0.2
+              );
+            }
+            if (!backupText && (batchImages.length === 0 || batchContent.trim().length >= 150)) {
+              backupText = await callGroqChat(
+                [
+                  { role: "system", content: systemInstruction },
+                  { role: "user", content: promptText + jsonSchemaHint },
+                ],
+                quizMode === "format_existing" ? 0.0 : 0.2
+              );
+            }
+            if (backupText) {
+              text = backupText.trim();
+            } else {
+              throw geminiErr;
+            }
+          } else {
+            throw geminiErr;
+          }
+        }
+        text = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
         return JSON.parse(text);
       };
 
@@ -859,13 +1068,10 @@ ${allAggregatedQuestions.slice(-15).map((q, idx) => `${idx + 1}. ${q.question}`)
       });
     } catch (error: any) {
       console.error("Vercel AI quiz generation error:", error);
-      const msg = error?.message || String(error);
-      const isQuotaError = error?.status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit|429/i.test(msg);
-      return res.status(isQuotaError ? 429 : 500).json({
-        error: "فشل توليد الأسئلة بواسطة الذكاء الاصطناعي.",
-        details: isQuotaError
-          ? "تم تجاوز الحد المؤقت لطلبات واجهة Gemini المجانية. يرجى الانتظار دقيقة واحدة ثم المحاولة مجدداً (أو التحقق من حصة مفتاح API)."
-          : msg,
+      const formatted = formatAiFailure(error, "فشل توليد الأسئلة بواسطة الذكاء الاصطناعي.");
+      return res.status(formatted.status).json({
+        error: formatted.error,
+        details: formatted.details,
       });
     }
   }
@@ -1016,9 +1222,10 @@ ${allAggregatedQuestions.slice(-15).map((q, idx) => `${idx + 1}. ${q.question}`)
       return res.status(200).json(finalResponse);
     } catch (error: any) {
       console.error("Vercel AI written grading error:", error);
-      return res.status(500).json({
-        error: "فشل تقييم الإجابة بواسطة الذكاء الاصطناعي.",
-        details: error?.message || String(error),
+      const formatted = formatAiFailure(error, "فشل تقييم الإجابة بواسطة الذكاء الاصطناعي.");
+      return res.status(formatted.status).json({
+        error: formatted.error,
+        details: formatted.details,
       });
     }
   }

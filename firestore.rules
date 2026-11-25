@@ -42,12 +42,16 @@ service cloud.firestore {
       return /databases/$(database)/documents/teachers/$(userEmail());
     }
 
+    function isDefaultAdmin() {
+      return isVerifiedUser() && userEmail() == 'mufa115599@gmail.com';
+    }
+
     function isTeacher() {
-      return isVerifiedUser() && exists(teacherPath());
+      return isDefaultAdmin() || (isVerifiedUser() && exists(teacherPath()));
     }
 
     function isAdmin() {
-      return isTeacher() && get(teacherPath()).data.role == 'admin';
+      return isDefaultAdmin() || (isTeacher() && get(teacherPath()).data.role == 'admin');
     }
 
     // المدير يعدّل أي محتوى؛ المعلم يعدّل ما أنشأه هو فقط ولا يغيّر المالك
