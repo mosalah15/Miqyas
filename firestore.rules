@@ -1,0 +1,271 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core security helpers
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    // ───────── صلاحيات المعلمين ─────────
+    // المعلم = حساب Google موثّق بريده له وثيقة في teachers/{email} (بحروف صغيرة).
+    // المدير = معلم دوره admin. الوثائق تُنشأ من لوحة المدير، والمدير الأول من Firebase Console.
+    function userEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function teacherPath() {
+      return /databases/$(database)/documents/teachers/$(userEmail());
+    }
+
+    function isTeacher() {
+      return isVerifiedUser() && exists(teacherPath());
+    }
+
+    function isAdmin() {
+      return isTeacher() && get(teacherPath()).data.role == 'admin';
+    }
+
+    // المدير يعدّل أي محتوى؛ المعلم يعدّل ما أنشأه هو فقط ولا يغيّر المالك
+    function canManageContent() {
+      return isAdmin()
+        || (isTeacher()
+            && resource.data.get('createdBy', '') == userEmail()
+            && request.resource.data.get('createdBy', '') == userEmail());
+    }
+
+    function canDeleteContent() {
+      return isAdmin() || (isTeacher() && resource.data.get('createdBy', '') == userEmail());
+    }
+
+    function isValidTeacherDoc(data, email) {
+      return data.keys().hasAll(['email', 'displayName', 'role', 'createdAt'])
+        && data.keys().hasOnly(['email', 'displayName', 'role', 'createdAt', 'createdBy'])
+        && data.email == email && email == email.lower() && email.size() <= 254
+        && data.displayName is string && data.displayName.size() <= 150
+        && data.role in ['teacher', 'admin']
+        && data.createdAt is string && data.createdAt.size() <= 100;
+    }
+
+    // Validators for private student entities
+    function isValidStudentProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'updatedAt'])
+        && data.uid is string && data.uid == userId && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() <= 150
+        && data.email is string && data.email.size() <= 200
+        && data.updatedAt is string && data.updatedAt.size() <= 100
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 1000));
+    }
+
+    function isValidStudentAttempt(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'quizId', 'quizTitle', 'score', 'totalQuestions', 'percentage', 'timeSpentSeconds', 'completedAt', 'questions'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'quizId', 'quizTitle', 'subjectId', 'subjectName', 'topicId',
+          'isPrivateQuiz', 'score', 'totalQuestions', 'percentage', 'timeSpentSeconds',
+          'completedAt', 'questions', 'userAnswers', 'writtenInputData', 'writtenGradingData'
+        ])
+        && data.id is string && isValidId(data.id)
+        && data.userId is string && data.userId == userId
+        && data.quizId is string && data.quizId.size() <= 128
+        && data.quizTitle is string && data.quizTitle.size() <= 300
+        && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
+        && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 200))
+        && (!('topicId' in data) || (data.topicId is string && data.topicId.size() <= 128))
+        && (!('isPrivateQuiz' in data) || data.isPrivateQuiz is bool)
+        && data.score is number && data.score >= 0 && data.score <= 500
+        && data.totalQuestions is number && data.totalQuestions >= 0 && data.totalQuestions <= 500
+        && data.percentage is number && data.percentage >= 0 && data.percentage <= 100
+        && data.timeSpentSeconds is number && data.timeSpentSeconds >= 0 && data.timeSpentSeconds <= 86400
+        && data.completedAt is string && data.completedAt.size() <= 100
+        && data.questions is list && data.questions.size() <= 200
+        && (!('userAnswers' in data) || data.userAnswers is map)
+        && (!('writtenInputData' in data) || data.writtenInputData is map)
+        && (!('writtenGradingData' in data) || data.writtenGradingData is map);
+    }
+
+    function isValidStudentMistake(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'quizId', 'quizTitle', 'question', 'wrongCount', 'lastMissedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'quizId', 'quizTitle', 'subjectId', 'subjectName',
+          'question', 'lastWrongAnswer', 'wrongCount', 'lastMissedAt'
+        ])
+        && data.id is string && isValidId(data.id)
+        && data.userId is string && data.userId == userId
+        && data.quizId is string && data.quizId.size() <= 128
+        && data.quizTitle is string && data.quizTitle.size() <= 300
+        && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
+        && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 200))
+        && data.question is map
+        && (!('lastWrongAnswer' in data) || (data.lastWrongAnswer is string && data.lastWrongAnswer.size() <= 2000))
+        && data.wrongCount is number && data.wrongCount >= 1 && data.wrongCount <= 10000
+        && data.lastMissedAt is string && data.lastMissedAt.size() <= 100;
+    }
+
+    function isValidStudentBookmark(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'quizId', 'quizTitle', 'question', 'savedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'quizId', 'quizTitle', 'subjectId', 'subjectName', 'question', 'savedAt'
+        ])
+        && data.id is string && isValidId(data.id)
+        && data.userId is string && data.userId == userId
+        && data.quizId is string && data.quizId.size() <= 128
+        && data.quizTitle is string && data.quizTitle.size() <= 300
+        && (!('subjectId' in data) || (data.subjectId is string && data.subjectId.size() <= 128))
+        && (!('subjectName' in data) || (data.subjectName is string && data.subjectName.size() <= 200))
+        && data.question is map
+        && data.savedAt is string && data.savedAt.size() <= 100;
+    }
+
+    function isValidPrivateQuiz(data, userId) {
+      return data.keys().hasAll(['id', 'userId', 'title', 'subjectName', 'questions', 'createdAt', 'updatedAt', 'isPrivate'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'title', 'subjectName', 'description',
+          'timeLimitMinutes', 'questions', 'createdAt', 'updatedAt', 'isPrivate'
+        ])
+        && data.id is string && isValidId(data.id)
+        && data.userId is string && data.userId == userId
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 250
+        && data.subjectName is string && data.subjectName.size() <= 200
+        && (!('description' in data) || (data.description is string && data.description.size() <= 2000))
+        && (!('timeLimitMinutes' in data) || (data.timeLimitMinutes is number && data.timeLimitMinutes >= 0 && data.timeLimitMinutes <= 600))
+        && data.questions is list && data.questions.size() > 0 && data.questions.size() <= 200
+        && data.createdAt is string && data.createdAt.size() <= 100
+        && data.updatedAt is string && data.updatedAt.size() <= 100
+        && data.isPrivate is bool && data.isPrivate == true;
+    }
+
+    function isValidQuizStat(data, quizId) {
+      return data.keys().hasAll(['quizId', 'attemptsCount', 'totalPercentageSum', 'lastAttemptAt'])
+        && data.keys().hasOnly(['quizId', 'attemptsCount', 'totalPercentageSum', 'lastAttemptAt'])
+        && data.quizId is string && data.quizId == quizId && data.quizId.size() <= 128
+        && data.attemptsCount is number && data.attemptsCount >= 0 && data.attemptsCount <= 10000000
+        && data.totalPercentageSum is number && data.totalPercentageSum >= 0 && data.totalPercentageSum <= 1000000000
+        && data.lastAttemptAt is string && data.lastAttemptAt.size() <= 100;
+    }
+
+    // Public academic content (Subjects, Topics, Quizzes)
+    match /subjects/{subjectId} {
+      allow read: if true;
+      allow create: if isTeacher() && isValidId(subjectId);
+      allow update: if isValidId(subjectId) && canManageContent();
+      allow delete: if isValidId(subjectId) && canDeleteContent();
+    }
+
+    match /topics/{topicId} {
+      allow read: if true;
+      allow create: if isTeacher() && isValidId(topicId);
+      allow update: if isValidId(topicId) && canManageContent();
+      allow delete: if isValidId(topicId) && canDeleteContent();
+    }
+
+    match /quizzes/{quizId} {
+      // الاختبار المنشور مقروء للجميع، والمسودة مقروءة للمعلمين فقط
+      allow read: if resource.data.isPublished == true || isTeacher();
+      allow create: if isTeacher() && isValidId(quizId);
+      allow update: if isValidId(quizId) && canManageContent();
+      allow delete: if isValidId(quizId) && canDeleteContent();
+    }
+
+    // حسابات المعلمين: كل معلم يقرأ وثيقته فقط، والمدير يدير الكل (ولا يحذف نفسه)
+    match /teachers/{email} {
+      allow get: if isVerifiedUser() && userEmail() == email;
+      allow get, list: if isAdmin();
+      allow create, update: if isAdmin() && isValidTeacherDoc(incoming(), email);
+      allow delete: if isAdmin() && userEmail() != email;
+    }
+
+    // Aggregated anonymous quiz statistics (no PII)
+    // كل كتابة تضيف محاولة واحدة بالضبط، ونسبة بين 0 و100. هذا يمنع تضخيم الأرقام بقيم عشوائية.
+    // (التحديد الكامل لمعدل الطلبات يحتاج السيرفر، انظر SECURITY.md)
+    match /quizStats/{quizId} {
+      allow read: if true;
+      allow create: if isValidId(quizId)
+        && isValidQuizStat(incoming(), quizId)
+        && incoming().attemptsCount == 1
+        && incoming().totalPercentageSum <= 100;
+      allow update: if isValidId(quizId)
+        && isValidQuizStat(incoming(), quizId)
+        && incoming().quizId == existing().quizId
+        && incoming().attemptsCount == existing().attemptsCount + 1
+        && incoming().totalPercentageSum >= existing().totalPercentageSum
+        && incoming().totalPercentageSum - existing().totalPercentageSum <= 100;
+    }
+
+    // Strictly isolated private student data
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) && isValidStudentProfile(incoming(), userId);
+      allow update: if isOwner(userId) && isValidId(userId) && isValidStudentProfile(incoming(), userId) && incoming().uid == existing().uid;
+      allow delete: if false;
+
+      match /attempts/{attemptId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(attemptId) && isValidStudentAttempt(incoming(), userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(attemptId);
+      }
+
+      match /mistakes/{mistakeId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(mistakeId) && isValidStudentMistake(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(mistakeId) && isValidStudentMistake(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().id == existing().id
+          && incoming().quizId == existing().quizId
+          && incoming().diff(existing()).affectedKeys().hasOnly(['lastWrongAnswer', 'wrongCount', 'lastMissedAt', 'question', 'quizTitle', 'subjectName']);
+        allow delete: if isOwner(userId) && isValidId(mistakeId);
+      }
+
+      match /bookmarks/{bookmarkId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(bookmarkId) && isValidStudentBookmark(incoming(), userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(bookmarkId);
+      }
+
+      match /privateQuizzes/{quizId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(quizId) && isValidPrivateQuiz(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(quizId) && isValidPrivateQuiz(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().id == existing().id
+          && incoming().createdAt == existing().createdAt
+          && incoming().isPrivate == existing().isPrivate
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subjectName', 'description', 'timeLimitMinutes', 'questions', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(quizId);
+      }
+    }
+
+    // Connection testing (global deny is safe; client checks reachability)
+    match /test/{docId} {
+      allow read, write: if false;
+    }
+  }
+}
+

@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+!infinityfree_upload/**
+
+
+# مخرجات بناء قديمة (تحتوي نسخة قديمة من الكود). تُولَّد من npm run build
+infinityfree_upload/
+

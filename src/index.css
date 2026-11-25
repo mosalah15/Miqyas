@@ -1,0 +1,183 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * ───────────────────────── هوية مقياس ─────────────────────────
+ * بدل ما نعدّل آلاف الأسطر، نعيد تعريف سلالم الألوان الأساسية التي يستخدمها
+ * الكود الحالي (zinc = المحايدات، blue = لون العلامة). كل كلاس مثل
+ * bg-blue-600 أو dark:bg-zinc-900 صار يرسم بلوحة مقياس تلقائياً.
+ *
+ *  zinc → محايدات باردة بميل خفيف للأخضر المزرق (ورق + حبر)
+ *  blue → "أخضر المقياس" الداكن، هو لون الأزرار والروابط والحالة النشطة
+ *  amber → "المؤشر": لون الإبرة، يُستخدم بحذر شديد (الشعار + التقدم)
+ */
+@theme {
+  --font-sans: "IBM Plex Sans Arabic", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* محايدات */
+  --color-zinc-50: #f5f8f9;
+  --color-zinc-100: #eaeff1;
+  --color-zinc-200: #dce3e6;
+  --color-zinc-300: #bcc7cc;
+  --color-zinc-400: #8f9fa6;
+  --color-zinc-500: #667880;
+  --color-zinc-600: #4a5b63;
+  --color-zinc-700: #34444b;
+  --color-zinc-800: #1c2b31;
+  --color-zinc-900: #111c20;
+  --color-zinc-950: #0a1316;
+
+  /* لون العلامة */
+  --color-blue-50: #e8f6f4;
+  --color-blue-100: #c9ebe7;
+  --color-blue-200: #9bd9d2;
+  --color-blue-300: #66c1b9;
+  --color-blue-400: #3aa59d;
+  --color-blue-500: #1b8a85;
+  --color-blue-600: #0b6e6e;
+  --color-blue-700: #095a5b;
+  --color-blue-800: #08484a;
+  --color-blue-900: #07393b;
+  --color-blue-950: #04282a;
+
+  /* المؤشر */
+  --color-marker: #f2b01e;
+
+  /* زوايا أهدأ من الافتراضي: البطاقات 12px بدل 16px */
+  --radius-xl: 0.625rem;
+  --radius-2xl: 0.75rem;
+  --radius-3xl: 1rem;
+}
+
+@layer base {
+  :root {
+    --bg-main: #f5f8f9;
+    --surface-card: #ffffff;
+    --border-color: #dce3e6;
+    --text-primary: #111c20;
+    --text-muted: #667880;
+    --brand-primary: #0b6e6e;
+    --brand-accent: #f2b01e;
+  }
+
+  .dark {
+    --bg-main: #0a1316;
+    --surface-card: #111c20;
+    --border-color: #1c2b31;
+    --text-primary: #eaeff1;
+    --text-muted: #8f9fa6;
+    --brand-primary: #3aa59d;
+    --brand-accent: #f2b01e;
+  }
+
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.7; /* العربية تحتاج ارتفاع سطر أكبر */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    border-color: var(--border-color);
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+    line-height: 1.3;
+  }
+
+  /* تركيز واضح للوحة المفاتيح في كل مكان */
+  :where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+    outline: 2px solid var(--color-blue-500);
+    outline-offset: 2px;
+  }
+  .dark :where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+    outline-color: var(--color-blue-400);
+  }
+
+  ::selection {
+    background: var(--color-blue-600);
+    color: #fff;
+  }
+}
+
+/* ───────── محاذاة النص (RTL / LTR) ───────── */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="submit"]):not([type="button"]),
+textarea {
+  text-align: start;
+}
+
+button,
+input[type="button"],
+input[type="submit"],
+input[type="reset"],
+[role="button"] {
+  text-align: center;
+}
+
+.text-center { text-align: center !important; }
+.text-start  { text-align: start !important; }
+.text-end    { text-align: end !important; }
+.text-left   { text-align: left !important; }
+.text-right  { text-align: right !important; }
+
+/* ───────── شريط التمرير ───────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-zinc-300); border-radius: 9999px; }
+.dark ::-webkit-scrollbar-thumb { background: var(--color-zinc-700); }
+::-webkit-scrollbar-thumb:hover { background: var(--color-zinc-400); }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/*
+ * ───────── المسطرة (عنصر مقياس المميز) ─────────
+ * خط تدريج أفقي يُرسم بـ CSS فقط: علامة كل 8px وعلامة أطول كل 5 علامات.
+ * يُستخدم كفاصل في الصفحة الرئيسية وكخلفية لشريط التقدم.
+ */
+.ruler-ticks {
+  --tick: var(--color-zinc-300);
+  height: 10px;
+  background-image:
+    repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 40px);
+  background-size: 100% 5px, 100% 10px;
+  background-position: 0 100%, 0 100%;
+  background-repeat: no-repeat;
+}
+.dark .ruler-ticks { --tick: var(--color-zinc-700); }
+
+/* احترام تفضيل تقليل الحركة */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ───────── الطباعة ───────── */
+@media print {
+  .no-print { display: none !important; }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+}
+
